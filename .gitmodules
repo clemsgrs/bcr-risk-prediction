@@ -1,0 +1,3 @@
+[submodule "hipt"]
+	path = hipt
+	url = https://github.com/clemsgrs/hipt.git
