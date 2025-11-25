@@ -33,6 +33,7 @@ model:
   embed_dim_slide: 192
   pretrained_weights:
   img_size_pretrained:
+  num_heads: 6
   mask_attn: False
   num_register_tokens: 0
 

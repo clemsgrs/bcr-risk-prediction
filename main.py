@@ -22,7 +22,6 @@ def get_args_parser(add_help: bool = True):
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="output",
         help="output directory to save logs and checkpoints",
     )
     return parser
@@ -126,13 +125,7 @@ def main(args):
     if cfg.data.fold_dir is not None:
         multi_fold = True
 
-    model = cfg.model.name
-    if model == "ab-mil":
-        root_dir = "ab-mil"
-    elif model == "hipt":
-        root_dir = "hipt"
-    else:
-        root_dir = "base"
+    root_dir = "hipt"
 
     if cfg.task == "classification":
         if multi_fold:
