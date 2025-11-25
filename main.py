@@ -22,6 +22,7 @@ def get_args_parser(add_help: bool = True):
     parser.add_argument(
         "--output-dir",
         type=str,
+        default=None,
         help="output directory to save logs and checkpoints",
     )
     return parser
@@ -115,11 +116,10 @@ def main(args):
 
     cfg = get_cfg_from_args(args)
 
-    output_dir = os.path.abspath(args.output_dir)
-    Path(output_dir).mkdir(exist_ok=True, parents=True)
-    cfg.output_dir = output_dir
+    output_dir = Path(cfg.output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
 
-    config_file = write_config(cfg, cfg.output_dir)
+    config_file = write_config(cfg, output_dir)
 
     multi_fold = False
     if cfg.data.fold_dir is not None:
