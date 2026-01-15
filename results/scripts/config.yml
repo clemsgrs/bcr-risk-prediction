@@ -10,6 +10,13 @@ capra_s:
   imp: "/data/pathology/projects/clement/leopard/csvs/brazil-capra-s-august-2025-revision.csv"
   uhc: "/data/pathology/projects/clement/leopard/csvs/cologne-capra-s.csv"
 
+clinical:
+  rumc: "/data/pathology/projects/clement/leopard/csvs/rumc.csv"
+  plco: "/data/pathology/projects/clement/leopard/csvs/plco-clinical-january-2026-update-ajcc-ed.csv"
+  plco_mapping: "/data/pathology/projects/clement/leopard/csvs/plco.csv"
+  imp: "/data/pathology/projects/clement/leopard/csvs/brazil-clinical-august-2025-revision.csv"
+  uhc: "/data/pathology/projects/clement/leopard/csvs/cologne-clinical.csv"
+
 cohort_to_csv_name:
   rumc: "test"
   plco: "test"
