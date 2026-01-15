@@ -1,0 +1,43 @@
+labels:
+  rumc: "/data/pathology/projects/clement/leopard/csvs/test.csv"
+  plco: "/data/pathology/projects/clement/leopard/csvs/test-dropped.csv"
+  imp: "/data/pathology/projects/clement/leopard/csvs/brazil-august-2025-revision.csv"
+  uhc: "/data/pathology/projects/clement/leopard/csvs/cologne-restricted.csv"
+
+capra_s:
+  rumc: "/data/pathology/projects/clement/leopard/csvs/rumc-capra-s.csv"
+  plco: "/data/pathology/projects/clement/leopard/csvs/plco-capra-s-january-2026-update-ajcc-ed.csv"
+  imp: "/data/pathology/projects/clement/leopard/csvs/brazil-capra-s-august-2025-revision.csv"
+  uhc: "/data/pathology/projects/clement/leopard/csvs/cologne-capra-s.csv"
+
+cohort_to_csv_name:
+  rumc: "test"
+  plco: "test"
+  imp: "brazil"
+  uhc: "cologne"
+
+num_test_cases:
+  rumc: 100
+  plco: 723
+  imp: 421
+  uhc: 330
+
+follow_up_cols:
+  rumc: "follow_up_y"
+  plco: "follow_up_y"
+  imp: "follow_up_month"
+  uhc: "follow_up_month (to doublecheck)"
+
+model_root_dir: "/data/pathology/projects/clement/leopard/results"
+
+model_info:
+  rumc:
+    - {id: "zcmf5viz", encoder: "Prost40M"}
+    - {id: "kyocpsj3", encoder: "UNI"}
+    - {id: "1kxrdx5r", encoder: "Virchow2"}
+    - {id: "gpujq5ax", encoder: "H-optimus-0"}
+  rumc+tcga:
+    - {id: "r1sj6vtz", encoder: "Prost40M"}
+    - {id: "suih83if", encoder: "UNI"}
+    - {id: "fl8qnilb", encoder: "Virchow2"}
+    - {id: "chbsurqa", encoder: "H-optimus-0"}
