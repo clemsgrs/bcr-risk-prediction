@@ -63,7 +63,7 @@ def main(
             )
 
             ax.set_title(encoder, fontweight="bold", fontsize=16, pad=10)
-            ax.set_xlabel("ISUP Grade", fontsize=12, fontweight="bold", labelpad=10)
+            ax.set_xlabel("ISUP", fontsize=12, fontweight="bold", labelpad=10)
             ax.set_ylabel("c-index", fontsize=12, fontweight="bold", labelpad=10)
             ax.set_ylim(0.4, 0.8)
             ax.set_facecolor("#f7f7f7")
@@ -77,7 +77,7 @@ def main(
             fig.legend(
                 handles, labels,
                 loc='upper center',
-                bbox_to_anchor=(0.5, 0.98),
+                bbox_to_anchor=(0.5, 1.02),
                 ncol=2,
                 frameon=True,
                 fancybox=True,
@@ -88,8 +88,8 @@ def main(
 
         sns.despine(fig=fig)
         if display_title:
-            plt.suptitle(f"Performance Breakdown by ISUP Grade ({tset})", fontsize=18, fontweight="bold", y=1.02)
-        plt.tight_layout(rect=[0, 0, 1, 0.95])
+            plt.suptitle(f"Performance Breakdown by ISUP Grade ({tset})", fontsize=18, fontweight="bold", y=1.08)
+        plt.tight_layout(rect=[0, 0, 1, 0.92])
         
         plt.savefig(output_dir / f"isup-subgroup-cindex-{tset.lower()}.png", dpi=300, bbox_inches="tight")
         plt.savefig(output_dir / f"isup-subgroup-cindex-{tset.lower()}.pdf", bbox_inches="tight")
