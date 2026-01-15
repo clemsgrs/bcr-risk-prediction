@@ -1,0 +1,9 @@
+cohort,train_setting,winners
+IMP,RUMC,Virchow2
+IMP,RUMC+TCGA,Prost40M;UNI;Virchow2
+PLCO,RUMC,Virchow2
+PLCO,RUMC+TCGA,Prost40M;UNI;Virchow2
+RUMC,RUMC,H-optimus-0;Prost40M;UNI;Virchow2
+RUMC,RUMC+TCGA,H-optimus-0;Prost40M;UNI;Virchow2
+UHC,RUMC,Prost40M;UNI;Virchow2
+UHC,RUMC+TCGA,Prost40M;Virchow2
