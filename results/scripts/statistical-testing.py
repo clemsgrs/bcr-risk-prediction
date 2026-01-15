@@ -1,13 +1,19 @@
 import pandas as pd
-import numpy as np
 import sys
 import argparse
 import os
 import yaml
 from pathlib import Path
 from itertools import combinations
-from sksurv.metrics import concordance_index_censored
 from tqdm import tqdm
+
+from utils import (
+    preprocess_labels,
+    bh_fdr,
+    paired_bootstrap_diff,
+    bootstrap_cindex,
+    read_model_predictions,
+)
 
 
 def get_args_parser(add_help: bool = True):
@@ -21,59 +27,6 @@ def get_args_parser(add_help: bool = True):
         "--config-file", type=str, default=default_config, help="path to the config yaml file",
     )
     return parser
-
-
-def _cindex(time, event, risk):
-    return concordance_index_censored(event.astype(bool), time, risk)[0]
-
-
-def _bootstrap_indices(n, event, rng):
-    idx = np.arange(n)
-    ev = idx[event == 1]
-    ce = idx[event == 0]
-    ev_bs = rng.choice(ev, size=len(ev), replace=True) if len(ev) else np.array([], int)
-    ce_bs = rng.choice(ce, size=len(ce), replace=True) if len(ce) else np.array([], int)
-    return rng.permutation(np.concatenate([ev_bs, ce_bs]))
-
-
-def bootstrap_cindex(time, event, risk, n_boot=4000, seed=42):
-    time_ = np.asarray(time, dtype=float)
-    event_ = np.asarray(event, dtype=int)
-    risk_ = np.asarray(risk, dtype=float)
-    c_point = _cindex(time_, event_, risk_)
-    rng = np.random.default_rng(seed)
-    boots = np.empty(n_boot, dtype=float)
-    n = len(time_)
-    for b in range(n_boot):
-        idx = _bootstrap_indices(n, event_, rng)
-        boots[b] = _cindex(time_[idx], event_[idx], risk_[idx])
-    lo, hi = np.percentile(boots, [2.5, 97.5])
-    return c_point, (lo, hi)
-
-
-def paired_bootstrap_diff(time, event, ra, rb, n_boot=4000, seed=42):
-    delta = _cindex(time, event, ra) - _cindex(time, event, rb)
-    rng = np.random.default_rng(seed)
-    deltas = []
-    for _ in range(n_boot):
-        idx = _bootstrap_indices(len(time), event, rng)
-        deltas.append(_cindex(time[idx], event[idx], ra[idx]) -
-                      _cindex(time[idx], event[idx], rb[idx]))
-    lo, hi = np.percentile(deltas, [2.5, 97.5])
-    p = 2 * min(np.mean(np.array(deltas) <= 0),
-                np.mean(np.array(deltas) >= 0))
-    return dict(delta=delta, ci_low=lo, ci_high=hi, p=min(1.0, p))
-
-
-def bh_fdr(pvals):
-    m = len(pvals)
-    ranked = pvals.sort_values().reset_index()
-    ranked["rank"] = np.arange(1, m+1)
-    ranked["q"] = ranked["p"] * m / ranked["rank"]
-    ranked["q"] = np.minimum.accumulate(ranked["q"][::-1])[::-1]
-    q = pd.Series(index=pvals.index, dtype=float)
-    q.loc[ranked["index"]] = ranked["q"].values
-    return q.clip(upper=1.0)
 
 
 def summarize_cindices(df, n_boot, seed):
@@ -171,25 +124,6 @@ def dataset_effect(df, n_boot, seed):
     return out
 
 
-def preprocess_labels(config):
-    pp_labels = {}
-    # RUMC
-    rumc_labels = pd.read_csv(config["labels"]["rumc"])
-    rumc_labels["cohort"] = rumc_labels.case_id.apply(lambda x: "radboud" if "radboud" in x else "plco")
-    rumc_labels = rumc_labels[rumc_labels.cohort == "radboud"]
-    pp_labels["rumc"] = rumc_labels
-    # PLCO
-    plco_labels = pd.read_csv(config["labels"]["plco"])
-    pp_labels["plco"] = plco_labels
-    # IMP
-    imp_labels = pd.read_csv(config["labels"]["imp"])
-    pp_labels["imp"] = imp_labels
-    # UHC
-    uhc_labels = pd.read_csv(config["labels"]["uhc"])
-    pp_labels["uhc"] = uhc_labels
-    return pp_labels
-
-
 if __name__ == "__main__":
 
     args = get_args_parser(add_help=True).parse_args()
@@ -229,54 +163,13 @@ if __name__ == "__main__":
                 label_df = labels[test_set]
                 csv_name = config["cohort_to_csv_name"][test_set]
                 
-                # Load model predictions logic (similar to read_model_predictions)
                 model_dir = model_root_dir / model_id
-                csv_paths = sorted([x for x in model_dir.glob("*.csv") if csv_name in str(x)])
+                df = read_model_predictions(config, model_dir, csv_name, test_set, label_df=label_df)
                 
-                # Assuming 5 folds as per usual, but let's handle what we find
-                if not csv_paths:
-                    tqdm.write(f"Warning: No CSVs found for {encoder} ({model_id}) on {test_set}")
+                if df is None:
                     continue
 
-                dfs = []
-                cols = ["case_id", "overall_survival_years"]
-                
-                # Filter for correct test set if RUMC/PLCO share csv file names or content
-                for fp in csv_paths:
-                    fold_num = fp.stem.split("-")[-1]
-                    preds_df = pd.read_csv(fp)[cols]
-                    
-                    # Convert survival years to risk score (negative of survival)
-                    # This ensures correct C-index directionality (Higher Risk = Worse Survival)
-                    pass_val = preds_df["overall_survival_years"].apply(lambda x: -np.abs(x))
-                    
-                    preds_df["risk_" + fold_num] = pass_val
-                    
-                    if test_set == "rumc":
-                        preds_df = preds_df[preds_df.case_id.str.contains("radboud")]
-                    elif test_set == "plco":
-                        preds_df = preds_df[~preds_df.case_id.str.contains("radboud")]
-                    
-                    dfs.append(preds_df[["case_id", "risk_" + fold_num]])
-
-                if not dfs: continue
-                
-                # Merge folds
-                preds_df = dfs[0]
-                for df_ in dfs[1:]:
-                    preds_df = pd.merge(preds_df, df_, on="case_id", how="inner")
-                
-                # Ensemble
-                risk_cols = [c for c in preds_df.columns if "risk_" in c]
-                preds_df["ensemble"] = preds_df[risk_cols].mean(axis=1)
-
-                # Merge with labels (time_to_event, event)
-                # Config has follow_up_cols
-                follow_up_col = config["follow_up_cols"][test_set]
-                
-                # Merge
-                df = pd.merge(preds_df, label_df[["case_id", follow_up_col, "event"]], on="case_id", how="inner")
-                df = df.rename(columns={follow_up_col: "time_to_event"})
+                df = df.rename(columns={"event_time": "time_to_event"})
                 
                 # Check length
                 expected_n = config["num_test_cases"][test_set]

@@ -10,6 +10,12 @@ from pathlib import Path
 from tabulate import tabulate, SEPARATING_LINE
 from sksurv.metrics import concordance_index_censored
 
+from utils import (
+    preprocess_labels,
+    preprocess_capra_s,
+    read_model_predictions,
+)
+
 
 def get_args_parser(add_help: bool = True):
     parser = argparse.ArgumentParser(add_help=add_help)
@@ -29,82 +35,6 @@ def get_args_parser(add_help: bool = True):
     )
     return parser
 
-
-def preprocess_labels(config):
-    pp_labels = {}
-    # RUMC
-    rumc_labels = pd.read_csv(config["labels"]["rumc"])
-    rumc_labels["cohort"] = rumc_labels.case_id.apply(lambda x: "radboud" if "radboud" in x else "plco")
-    rumc_labels = rumc_labels[rumc_labels.cohort == "radboud"]
-    pp_labels["rumc"] = rumc_labels
-    # PLCO
-    plco_labels = pd.read_csv(config["labels"]["plco"])
-    pp_labels["plco"] = plco_labels
-    # IMP
-    imp_labels = pd.read_csv(config["labels"]["imp"])
-    pp_labels["imp"] = imp_labels
-    # UHC
-    uhc_labels = pd.read_csv(config["labels"]["uhc"])
-    pp_labels["uhc"] = uhc_labels
-    return pp_labels
-
-
-def preprocess_capra_s(config):
-    pp_capra = {}
-    # RUMC
-    rumc_capra = pd.read_csv(config["capra_s"]["rumc"])
-    rumc_capra = rumc_capra[rumc_capra.partition == "testing"]
-    pp_capra["rumc"] = rumc_capra
-    # PLCO
-    plco_capra = pd.read_csv(config["capra_s"]["plco"])
-    pp_capra["plco"] = plco_capra
-    # IMP
-    imp_capra = pd.read_csv(config["capra_s"]["imp"])
-    pp_capra["imp"] = imp_capra
-    # UHC
-    uhc_capra = pd.read_csv(config["capra_s"]["uhc"])
-    pp_capra["uhc"] = uhc_capra
-    return pp_capra
-
-
-def read_model_predictions(
-    config,
-    model_dir: Path,
-    csv_name: str,
-    test_set: str,
-    label_df: pd.DataFrame,
-    capra_df: pd.DataFrame,
-    num_folds: int = 5,
-) -> pd.DataFrame:
-    csv_paths = sorted([x for x in model_dir.glob("*.csv") if csv_name in str(x)])
-    assert len(csv_paths) == num_folds, f"Expected {num_folds} folds, found {len(csv_paths)}"
-    dfs = []
-    cols = ["case_id", "overall_survival_years"]
-    for fp in csv_paths:
-        fold_num = fp.stem.split("-")[-1]
-        preds_df = pd.read_csv(fp)[cols]
-        preds_df["risk"] = preds_df.overall_survival_years.apply(lambda x: -np.abs(x))
-        preds_df = preds_df.rename(columns={"risk": f"fold_{fold_num}"})
-        preds_df = preds_df[["case_id", f"fold_{fold_num}"]]
-        if test_set == "rumc":
-            test_preds_df = preds_df[preds_df.case_id.str.contains("radboud")]
-        elif test_set == "plco":
-            test_preds_df = preds_df[~preds_df.case_id.str.contains("radboud")]
-        else:
-            test_preds_df = preds_df
-        dfs.append(test_preds_df)
-    # merge folds
-    preds_df = dfs[0]
-    for df_ in dfs[1:]:
-        preds_df = pd.merge(preds_df, df_, on="case_id", how="inner")
-    # ensemble fold predictions
-    preds_df["ensemble"] = preds_df[[f"fold_{i}" for i in range(num_folds)]].apply(lambda row: np.mean(row), axis=1)
-    # merge with CAPRA-S and labels
-    df = pd.merge(preds_df, capra_df, on="case_id", how="inner")
-    follow_up_col = config["follow_up_cols"][test_set]
-    df = pd.merge(df, label_df[["case_id", follow_up_col, "event"]], on="case_id", how="inner")
-    df = df.rename(columns={follow_up_col: "event_time"})
-    return df
 
 
 def main(config, training_set: str, num_folds: int = 5, verbose: bool = False) -> pd.DataFrame:
