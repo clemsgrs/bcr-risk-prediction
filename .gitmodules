@@ -1,3 +1,6 @@
 [submodule "hipt"]
 	path = hipt
 	url = https://github.com/clemsgrs/hipt.git
+[submodule "DCTM"]
+	path = DCTM
+	url = https://github.com/sinai-computational-pathology/DCTM.git
