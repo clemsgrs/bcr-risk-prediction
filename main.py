@@ -28,70 +28,6 @@ def get_args_parser(add_help: bool = True):
     return parser
 
 
-def classification(root_dir, config_file, output_dir):
-    print(f"Running {root_dir}/train/classification.py...")
-    cmd = [
-        sys.executable,
-        "src/train/classification.py",
-        "--config-file",
-        os.path.abspath(config_file),
-        "--output-dir",
-        os.path.abspath(output_dir),
-    ]
-    result = subprocess.run(cmd, cwd=root_dir)
-    if result.returncode != 0:
-        print("Classification failed. Exiting.")
-        sys.exit(result.returncode)
-
-
-def classification_multi(root_dir, config_file, output_dir):
-    print(f"Running {root_dir}/train/classification-multi.py...")
-    cmd = [
-        sys.executable,
-        "src/train/classification-multi.py",
-        "--config-file",
-        os.path.abspath(config_file),
-        "--output-dir",
-        os.path.abspath(output_dir),
-    ]
-    result = subprocess.run(cmd, cwd=root_dir)
-    if result.returncode != 0:
-        print("Multi-fold classification training failed. Exiting.")
-        sys.exit(result.returncode)
-
-
-def regression(root_dir, config_file, output_dir):
-    print(f"Running {root_dir}/train/regression.py...")
-    cmd = [
-        sys.executable,
-        "src/train/regression.py",
-        "--config-file",
-        os.path.abspath(config_file),
-        "--output-dir",
-        os.path.abspath(output_dir),
-    ]
-    result = subprocess.run(cmd, cwd=root_dir)
-    if result.returncode != 0:
-        print("Regression failed. Exiting.")
-        sys.exit(result.returncode)
-
-
-def regression_multi(root_dir, config_file, output_dir):
-    print(f"Running {root_dir}/train/regression-multi.py...")
-    cmd = [
-        sys.executable,
-        "src/train/regression-multi.py",
-        "--config-file",
-        os.path.abspath(config_file),
-        "--output-dir",
-        os.path.abspath(output_dir),
-    ]
-    result = subprocess.run(cmd, cwd=root_dir)
-    if result.returncode != 0:
-        print("Multi-fold regression training failed. Exiting.")
-        sys.exit(result.returncode)
-
-
 def survival(root_dir, config_file, output_dir):
     print(f"Running {root_dir}/train/survival.py...")
     cmd = [
@@ -139,24 +75,10 @@ def main(args):
 
     root_dir = "hipt"
 
-    if cfg.task == "classification":
-        if multi_fold:
-            classification_multi(root_dir, config_file, output_dir)
-        else:
-            classification(root_dir, config_file, output_dir)
-    elif cfg.task == "regression":
-        if multi_fold:
-            regression_multi(root_dir, config_file, output_dir)
-        else:
-            regression(root_dir, config_file, output_dir)
-    elif cfg.task == "survival":
-        if multi_fold:
-            survival_multi(root_dir, config_file, output_dir)
-        else:
-            survival(root_dir, config_file, output_dir)
+    if multi_fold:
+        survival_multi(root_dir, config_file, output_dir)
     else:
-        print(f"Unsupported task: {cfg.task}. Exiting.")
-        sys.exit(1)
+        survival(root_dir, config_file, output_dir)
 
 
 if __name__ == "__main__":

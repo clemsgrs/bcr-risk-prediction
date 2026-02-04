@@ -5,9 +5,7 @@ data:
 
 output_dir: "output" # output directory
 
-task: "classification" # task type: classification, regression, survival
-
-num_classes: 2 # number of classes for classification task
+num_classes: 2 # number of bins when discretizing survival times
 label_name: "label"
 label_mapping:
 
