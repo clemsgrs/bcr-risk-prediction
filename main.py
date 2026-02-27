@@ -38,7 +38,10 @@ def survival(root_dir, config_file, output_dir):
         "--output-dir",
         os.path.abspath(output_dir),
     ]
-    result = subprocess.run(cmd, cwd=root_dir)
+    # Remove parent directory from PYTHONPATH to avoid src/ namespace collision
+    env = os.environ.copy()
+    env.pop('PYTHONPATH', None)
+    result = subprocess.run(cmd, cwd=root_dir, env=env)
     if result.returncode != 0:
         print("Survival training failed. Exiting.")
         sys.exit(result.returncode)
@@ -54,7 +57,10 @@ def survival_multi(root_dir, config_file, output_dir):
         "--output-dir",
         os.path.abspath(output_dir),
     ]
-    result = subprocess.run(cmd, cwd=root_dir)
+    # Remove parent directory from PYTHONPATH to avoid src/ namespace collision
+    env = os.environ.copy()
+    env.pop('PYTHONPATH', None)
+    result = subprocess.run(cmd, cwd=root_dir, env=env)
     if result.returncode != 0:
         print("Multi-fold survival training failed. Exiting.")
         sys.exit(result.returncode)
