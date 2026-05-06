@@ -29,6 +29,7 @@ def get_args_parser(add_help: bool = True):
 
 
 def survival(root_dir, config_file, output_dir):
+    root_dir = Path(root_dir).resolve()
     print(f"Running {root_dir}/train/survival.py...")
     cmd = [
         sys.executable,
@@ -37,17 +38,16 @@ def survival(root_dir, config_file, output_dir):
         os.path.abspath(config_file),
         "--output-dir",
         os.path.abspath(output_dir),
+        "task=survival",
     ]
-    # Remove parent directory from PYTHONPATH to avoid src/ namespace collision
-    env = os.environ.copy()
-    env.pop('PYTHONPATH', None)
-    result = subprocess.run(cmd, cwd=root_dir, env=env)
+    result = subprocess.run(cmd, cwd=root_dir, env=build_training_env(root_dir))
     if result.returncode != 0:
         print("Survival training failed. Exiting.")
         sys.exit(result.returncode)
 
 
 def survival_multi(root_dir, config_file, output_dir):
+    root_dir = Path(root_dir).resolve()
     print(f"Running {root_dir}/train/survival-multi.py...")
     cmd = [
         sys.executable,
@@ -56,11 +56,9 @@ def survival_multi(root_dir, config_file, output_dir):
         os.path.abspath(config_file),
         "--output-dir",
         os.path.abspath(output_dir),
+        "task=survival",
     ]
-    # Remove parent directory from PYTHONPATH to avoid src/ namespace collision
-    env = os.environ.copy()
-    env.pop('PYTHONPATH', None)
-    result = subprocess.run(cmd, cwd=root_dir, env=env)
+    result = subprocess.run(cmd, cwd=root_dir, env=build_training_env(root_dir))
     if result.returncode != 0:
         print("Multi-fold survival training failed. Exiting.")
         sys.exit(result.returncode)
@@ -100,6 +98,16 @@ def survival_dctm_multi(root_dir, config_file, output_dir):
         sys.exit(result.returncode)
 
 
+def build_training_env(root_dir: Path):
+    env = os.environ.copy()
+    root_dir = str(root_dir.resolve())
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        f"{root_dir}{os.pathsep}{pythonpath}" if pythonpath else root_dir
+    )
+    return env
+
+
 def main(args):
 
     cfg = get_cfg_from_args(args)
@@ -118,14 +126,14 @@ def main(args):
 
     if use_dctm:
         # Run DCTM training from main repo
-        root_dir = "."
+        root_dir = Path(__file__).resolve().parent
         if multi_fold:
             survival_dctm_multi(root_dir, config_file, output_dir)
         else:
             survival_dctm(root_dir, config_file, output_dir)
     else:
         # Run original training from hipt submodule
-        root_dir = "hipt"
+        root_dir = Path(__file__).resolve().parent / "hipt"
         if multi_fold:
             survival_multi(root_dir, config_file, output_dir)
         else:
