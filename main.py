@@ -64,6 +64,40 @@ def survival_multi(root_dir, config_file, output_dir):
         sys.exit(result.returncode)
 
 
+def survival_dctm(root_dir, config_file, output_dir):
+    """Run DCTM survival training (single-fold)."""
+    print(f"Running {root_dir}/src/train/survival_dctm.py...")
+    cmd = [
+        sys.executable,
+        "src/train/survival_dctm.py",
+        "--config-file",
+        os.path.abspath(config_file),
+        "--output-dir",
+        os.path.abspath(output_dir),
+    ]
+    result = subprocess.run(cmd, cwd=root_dir)
+    if result.returncode != 0:
+        print("DCTM survival training failed. Exiting.")
+        sys.exit(result.returncode)
+
+
+def survival_dctm_multi(root_dir, config_file, output_dir):
+    """Run DCTM survival training (multi-fold cross-validation)."""
+    print(f"Running {root_dir}/src/train/survival_dctm_multi.py...")
+    cmd = [
+        sys.executable,
+        "src/train/survival_dctm_multi.py",
+        "--config-file",
+        os.path.abspath(config_file),
+        "--output-dir",
+        os.path.abspath(output_dir),
+    ]
+    result = subprocess.run(cmd, cwd=root_dir)
+    if result.returncode != 0:
+        print("Multi-fold DCTM survival training failed. Exiting.")
+        sys.exit(result.returncode)
+
+
 def build_training_env(root_dir: Path):
     env = os.environ.copy()
     root_dir = str(root_dir.resolve())
@@ -87,12 +121,23 @@ def main(args):
     if cfg.data.fold_dir is not None:
         multi_fold = True
 
-    root_dir = Path(__file__).resolve().parent / "hipt"
+    # Check if DCTM is enabled
+    use_dctm = cfg.get("dctm", {}).get("enable", False)
 
-    if multi_fold:
-        survival_multi(root_dir, config_file, output_dir)
+    if use_dctm:
+        # Run DCTM training from main repo
+        root_dir = Path(__file__).resolve().parent
+        if multi_fold:
+            survival_dctm_multi(root_dir, config_file, output_dir)
+        else:
+            survival_dctm(root_dir, config_file, output_dir)
     else:
-        survival(root_dir, config_file, output_dir)
+        # Run original training from hipt submodule
+        root_dir = Path(__file__).resolve().parent / "hipt"
+        if multi_fold:
+            survival_multi(root_dir, config_file, output_dir)
+        else:
+            survival(root_dir, config_file, output_dir)
 
 
 if __name__ == "__main__":

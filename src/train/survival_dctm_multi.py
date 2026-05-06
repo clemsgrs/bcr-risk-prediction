@@ -1,0 +1,384 @@
+"""
+Multi-fold cross-validation survival training with DCTM head.
+
+This script trains a HIPT model with DCTM (Deep Conditional Transformation Model)
+survival head for continuous-time survival analysis across multiple folds.
+"""
+
+import argparse
+import gc
+import multiprocessing as mp
+import os
+import time
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+import tqdm
+import wandb
+
+
+from hipt.src.data.dataset import DatasetOptions, ExtractedFeaturesSurvivalDataset
+from hipt.src.utils import (
+    EarlyStopping,
+    OptimizerFactory,
+    SchedulerFactory,
+    compute_time,
+    setup,
+    update_log_dict,
+)
+
+from src.train.survival_dctm import (
+    train_dctm,
+    tune_dctm,
+    inference_dctm,
+    create_model,
+    EarlyStoppingDCTM,
+    normalize_time,
+)
+
+
+def get_args_parser(add_help: bool = True):
+    parser = argparse.ArgumentParser("survival-dctm-multi", add_help=add_help)
+    parser.add_argument(
+        "--config-file", default="", metavar="FILE", help="path to config file"
+    )
+    parser.add_argument(
+        "opts",
+        help='Modify config options at the end of the command. Use "path.key=value".',
+        default=None,
+        nargs=argparse.REMAINDER,
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="output directory to save logs and checkpoints",
+    )
+    return parser
+
+
+def main(args):
+    cfg = setup(args)
+
+    output_dir = Path(cfg.output_dir)
+
+    checkpoint_root_dir = output_dir / "checkpoints"
+    checkpoint_root_dir.mkdir(parents=True, exist_ok=True)
+
+    result_root_dir = output_dir / "results"
+    result_root_dir.mkdir(parents=True, exist_ok=True)
+
+    features_dir = Path(cfg.features_dir)
+
+    num_workers = min(mp.cpu_count(), cfg.speed.num_workers)
+    if "SLURM_JOB_CPUS_PER_NODE" in os.environ:
+        num_workers = min(num_workers, int(os.environ["SLURM_JOB_CPUS_PER_NODE"]))
+
+    fold_root_dir = Path(cfg.data.fold_dir)
+    nfold = len([_ for _ in fold_root_dir.glob("fold*")])
+    print(f"Training on {nfold} folds")
+    print()
+
+    tune_metrics = defaultdict(dict)
+    test_metrics = defaultdict(dict)
+
+    start_time = time.time()
+    for i in range(nfold):
+        fold_dir = Path(fold_root_dir, f"fold-{i}")
+        if not fold_dir.is_dir():
+            fold_dir = Path(fold_root_dir, f"fold_{i}")
+            assert fold_dir.is_dir()
+        checkpoint_dir = Path(checkpoint_root_dir, f"fold-{i}")
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        result_dir = Path(result_root_dir, f"fold-{i}")
+        result_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"Loading data for fold {i+1}")
+
+        train_df_path = Path(fold_dir, "train.csv")
+        train_df = pd.read_csv(train_df_path)
+
+        tune_df_path = Path(fold_dir, "tune.csv")
+        tune_df = pd.read_csv(tune_df_path)
+
+        test_df = None
+        test_df_path = Path(fold_dir, "test.csv")
+        if test_df_path.is_file():
+            test_df = pd.read_csv(test_df_path)
+
+        # Compute max_time from THIS fold's training set only
+        max_time = train_df[cfg.label_name].max()
+        print(f"Max time from training set (fold {i}): {max_time}")
+
+        train_dataset_options = DatasetOptions(
+            df=train_df,
+            features_dir=features_dir,
+            label_name=cfg.label_name,
+            label_mapping=cfg.label_mapping,
+        )
+        tune_dataset_options = DatasetOptions(
+            df=tune_df,
+            features_dir=features_dir,
+            label_name=cfg.label_name,
+            label_mapping=cfg.label_mapping,
+        )
+        if test_df is not None:
+            test_dataset_options = DatasetOptions(
+                df=test_df,
+                features_dir=features_dir,
+                label_name=cfg.label_name,
+                label_mapping=cfg.label_mapping,
+            )
+
+        print("Initializing datasets")
+        train_dataset = ExtractedFeaturesSurvivalDataset(train_dataset_options)
+        tune_dataset = ExtractedFeaturesSurvivalDataset(tune_dataset_options)
+        if test_df is not None:
+            test_dataset = ExtractedFeaturesSurvivalDataset(test_dataset_options)
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        print("Initializing model")
+        model = create_model(cfg, device)
+        print(model)
+
+        print("Configuring optimizer & scheduler")
+        model_params = filter(lambda p: p.requires_grad, model.parameters())
+        optimizer = OptimizerFactory(
+            cfg.optim.name, model_params, lr=cfg.optim.lr, weight_decay=cfg.optim.wd
+        ).get_optimizer()
+        scheduler = SchedulerFactory(optimizer, cfg.optim.lr_scheduler).get_scheduler()
+
+        early_stopping = EarlyStoppingDCTM(
+            cfg.early_stopping.tracking,
+            cfg.early_stopping.min_max,
+            cfg.early_stopping.patience,
+            cfg.early_stopping.min_epoch,
+            checkpoint_dir=checkpoint_dir,
+            save_all=cfg.early_stopping.save_all,
+            max_time=max_time,
+        )
+
+        stop = False
+        fold_start_time = time.time()
+
+        if cfg.wandb.enable:
+            wandb.define_metric(f"train/fold_{i}/epoch", summary="max")
+
+        print()
+        with tqdm.tqdm(
+            range(cfg.training.nepochs),
+            desc="Training",
+            unit=" epoch",
+            leave=True,
+        ) as t:
+            for epoch in t:
+                epoch_start_time = time.time()
+                train_dataset.seed = epoch
+
+                if cfg.wandb.enable:
+                    log_dict = {f"train/fold_{i}/epoch": epoch + 1}
+
+                train_results = train_dctm(
+                    epoch + 1,
+                    model,
+                    train_dataset,
+                    optimizer,
+                    max_time,
+                    metric_names=cfg.metrics,
+                    batch_size=cfg.training.batch_size,
+                    gradient_accumulation=cfg.training.gradient_accumulation,
+                    num_workers=num_workers,
+                    device=device,
+                )
+
+                if cfg.wandb.enable:
+                    update_log_dict(
+                        f"train/fold_{i}",
+                        train_results,
+                        log_dict,
+                        step=f"train/fold_{i}/epoch",
+                    )
+
+                train_dataset.df.to_csv(
+                    Path(result_dir, f"train-{epoch+1}.csv"), index=False
+                )
+
+                if epoch % cfg.tuning.tune_every == 0:
+                    tune_results = tune_dctm(
+                        epoch + 1,
+                        model,
+                        tune_dataset,
+                        max_time,
+                        metric_names=cfg.metrics,
+                        batch_size=cfg.tuning.batch_size,
+                        num_workers=num_workers,
+                        device=device,
+                    )
+
+                    if cfg.wandb.enable:
+                        update_log_dict(
+                            f"tune/fold_{i}",
+                            tune_results,
+                            log_dict,
+                            step=f"train/fold_{i}/epoch",
+                        )
+
+                    tune_dataset.df.to_csv(
+                        Path(result_dir, f"tune-{epoch+1}.csv"), index=False
+                    )
+
+                    early_stopping(epoch, model, tune_results)
+                    if early_stopping.early_stop and cfg.early_stopping.enable:
+                        stop = True
+
+                lr = cfg.optim.lr
+                if scheduler:
+                    lr = scheduler.get_last_lr()[0]
+                    scheduler.step()
+                if cfg.wandb.enable:
+                    wandb.define_metric(
+                        f"train/fold_{i}/lr", step_metric=f"train/fold_{i}/epoch"
+                    )
+                    log_dict.update({f"train/fold_{i}/lr": lr})
+                    wandb.log(log_dict)
+
+                epoch_end_time = time.time()
+                epoch_mins, epoch_secs = compute_time(epoch_start_time, epoch_end_time)
+                tqdm.tqdm.write(
+                    f"End of epoch {epoch+1} / {cfg.training.nepochs} \t Time Taken:  {epoch_mins}m {epoch_secs}s"
+                )
+
+                if stop:
+                    tqdm.tqdm.write(
+                        f"Stopping early because best {cfg.early_stopping.tracking} was reached {cfg.early_stopping.patience} epochs ago"
+                    )
+                    break
+
+        fold_end_time = time.time()
+        fold_mins, fold_secs = compute_time(fold_start_time, fold_end_time)
+        print(f"Total time taken for fold {i+1}/{nfold}: {fold_mins}m {fold_secs}s")
+
+        # Load best model
+        best_model_fp = Path(checkpoint_dir, f"{cfg.testing.retrieve_checkpoint}.pt")
+        if cfg.wandb.enable:
+            wandb.save(str(best_model_fp))
+        checkpoint = torch.load(best_model_fp)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        saved_max_time = checkpoint["max_time"]
+
+        # Tune set inference
+        best_tune_results = inference_dctm(
+            model,
+            tune_dataset,
+            saved_max_time,
+            metric_names=cfg.metrics,
+            batch_size=1,
+            num_workers=num_workers,
+            device=device,
+        )
+        tune_dataset.df.to_csv(
+            Path(result_dir, f"tune-{cfg.testing.retrieve_checkpoint}.csv"), index=False
+        )
+
+        for r, v in best_tune_results.items():
+            tune_metrics[f"fold_{i}"][r] = v
+            if isinstance(v, float):
+                v = round(v, 5)
+            if cfg.wandb.enable:
+                wandb.log({f"tune/fold_{i}/{r}-{cfg.testing.retrieve_checkpoint}": v})
+            else:
+                print(f"tune (fold {i}) {r}-{cfg.testing.retrieve_checkpoint}: {v}")
+
+        if test_df is not None:
+            # Test set inference
+            test_results = inference_dctm(
+                model,
+                test_dataset,
+                saved_max_time,
+                metric_names=cfg.metrics,
+                batch_size=1,
+                num_workers=num_workers,
+                device=device,
+            )
+            test_dataset.df.to_csv(Path(result_dir, "test.csv"), index=False)
+
+            for r, v in test_results.items():
+                test_metrics[f"fold_{i}"][r] = v
+                if isinstance(v, float):
+                    v = round(v, 5)
+                if cfg.wandb.enable:
+                    wandb.log({f"test/fold_{i}/{r}": v})
+                else:
+                    print(f"test (fold {i}) {r}: {v}")
+
+        # Free memory at the end of each fold
+        del model, train_dataset, tune_dataset, optimizer, scheduler
+        if test_df is not None:
+            del test_dataset
+
+        # Clear PyTorch's cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Explicit garbage collection
+        gc.collect()
+
+    # Gather mean metrics across folds
+    metrics = defaultdict(list)
+    for _, metric_dict in tune_metrics.items():
+        for metric_name, metric_val in metric_dict.items():
+            if isinstance(metric_val, float):
+                metrics[metric_name].append(metric_val)
+
+    mean_tune_metrics = {
+        metric_name: round(np.mean(metric_values), 5)
+        for metric_name, metric_values in metrics.items()
+    }
+    std_tune_metrics = {
+        metric_name: round(np.std(metric_values), 5)
+        for metric_name, metric_values in metrics.items()
+    }
+    for name in metrics.keys():
+        mean = mean_tune_metrics[name]
+        std = std_tune_metrics[name]
+        if cfg.wandb.enable:
+            wandb.log({f"tune/{name}_mean": mean})
+            wandb.log({f"tune/{name}_std": std})
+        else:
+            print(f"mean tune {name}: {mean} +/- {std}")
+
+    metrics = defaultdict(list)
+    for _, metric_dict in test_metrics.items():
+        for metric_name, metric_val in metric_dict.items():
+            if isinstance(metric_val, float):
+                metrics[metric_name].append(metric_val)
+
+    mean_test_metrics = {
+        metric_name: round(np.mean(metric_values), 5)
+        for metric_name, metric_values in metrics.items()
+    }
+    std_test_metrics = {
+        metric_name: round(np.std(metric_values), 5)
+        for metric_name, metric_values in metrics.items()
+    }
+    for name in metrics.keys():
+        mean = mean_test_metrics[name]
+        std = std_test_metrics[name]
+        if cfg.wandb.enable:
+            wandb.log({f"test/{name}_mean": mean})
+            wandb.log({f"test/{name}_std": std})
+        else:
+            print(f"mean test {name}: {mean} +/- {std}")
+
+    end_time = time.time()
+    mins, secs = compute_time(start_time, end_time)
+    print(f"Total time taken: {mins}m {secs}s")
+
+
+if __name__ == "__main__":
+    args = get_args_parser(add_help=True).parse_args()
+    main(args)

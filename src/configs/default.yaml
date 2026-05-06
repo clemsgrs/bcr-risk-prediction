@@ -35,6 +35,12 @@ model:
   mask_attn: False
   num_register_tokens: 0
 
+dctm: # Deep Conditional Transformation Model) survival head
+  enable: false  # set to true to use DCTM instead of discrete-bin approach
+  variant: "shift"  # DCTM variant: "shift" (DCTM^S), "shift_scale" (DCTM^SS), "general" (DCTM^G)
+  basis_features: 6  # number of Bernstein basis features (polynomial degree + 1)
+  family: "logistic"  # distribution family: "logistic" or "gompertz"
+
 training:
   nepochs: 100
   batch_size: 1
