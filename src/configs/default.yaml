@@ -40,6 +40,12 @@ dctm: # Deep Conditional Transformation Model) survival head
   variant: "shift"  # DCTM variant: "shift" (DCTM^S), "shift_scale" (DCTM^SS), "general" (DCTM^G)
   basis_features: 6  # number of Bernstein basis features (polynomial degree + 1)
   family: "logistic"  # distribution family: "logistic" or "gompertz"
+  evaluation:
+    horizon_quantiles: [0.25, 0.5, 0.75, 1.0]
+    horizon_source: "train_events"
+    compute_ibs: true
+    ibs_num_times: 100
+    risk_alias_quantile: 1.0
 
 training:
   nepochs: 100
