@@ -15,6 +15,7 @@ def get_args_parser(add_help: bool = True):
     default_outdir = (script_dir / ".." / "figures").resolve()
     default_pairwise_test_dir = (script_dir / ".." / "pairwise-tests").resolve()
     default_config = (script_dir / "config.yml").resolve()
+    default_dataset_effect_csv = (script_dir / ".." / "dataset-effect.csv").resolve()
 
     parser.add_argument(
         "-o", "--output-dir", type=str, default=str(default_outdir),
@@ -25,10 +26,39 @@ def get_args_parser(add_help: bool = True):
         help="Directory containing pairwise test CSVs",
     )
     parser.add_argument(
+        "--dataset-effect-csv", type=str, default=str(default_dataset_effect_csv),
+        help="Path to dataset-effect.csv (used for unified color scale)",
+    )
+    parser.add_argument(
         "--config-file", type=str, default=str(default_config),
         help="Path to the config YAML file",
     )
     return parser
+
+
+def compute_global_vlim(
+    pairwise_tests_dir: Path,
+    settings: list,
+    cohorts: list,
+    dataset_effect_csv: Path = None,
+) -> float:
+    """Compute a unified color limit from all pairwise CSVs and optionally dataset-effect.csv."""
+    all_abs = []
+    for setting in settings:
+        for cohort in cohorts:
+            fpath = pairwise_tests_dir / f"pairwise-{cohort}-{setting}.csv"
+            if fpath.exists():
+                df = pd.read_csv(fpath)
+                if "delta" in df.columns:
+                    all_abs.extend(df["delta"].abs().dropna().tolist())
+    if dataset_effect_csv is not None and dataset_effect_csv.exists():
+        df = pd.read_csv(dataset_effect_csv)
+        if "delta" in df.columns:
+            all_abs.extend(df["delta"].abs().dropna().tolist())
+    if not all_abs:
+        return 0.001
+    vmax = float(max(all_abs))
+    return float(np.ceil(vmax * 1000) / 1000.0)
 
 
 def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -131,6 +161,7 @@ def plot_all_cohorts_grid(
     cohorts: list,
     n_samples_dict: dict = None,
     display_title: bool = False,
+    vlim: float = None,
 ):
     """Plot all cohort heatmaps in a grid with shared colorbar."""
     mats = []
@@ -157,17 +188,16 @@ def plot_all_cohorts_grid(
             title += f" (n={n_samples_dict[cohort.lower()]})"
         titles.append(title)
 
-    # Filter out None matrices for computing global color limits
     valid_mats = [m for m in mats if m is not None]
     if not valid_mats:
         print(f"[warn] No data found for setting {setting}. Skipping grid plot.")
         return
 
-    # Compute global color limits
-    all_vals = np.concatenate([np.abs(m) for m in valid_mats])
-    vmax = np.nanmax(all_vals)
-    vmax = 0.001 if not np.isfinite(vmax) or vmax == 0 else vmax
-    vlim = float(np.ceil(vmax * 1000) / 1000.0)
+    if vlim is None:
+        all_vals = np.concatenate([np.abs(m) for m in valid_mats])
+        vmax = np.nanmax(all_vals)
+        vmax = 0.001 if not np.isfinite(vmax) or vmax == 0 else vmax
+        vlim = float(np.ceil(vmax * 1000) / 1000.0)
 
     # Plot setup
     n_plots = len(cohorts)
@@ -210,6 +240,7 @@ def main(
     output_dir: Path,
     pairwise_tests_dir: Path,
     config_path: Path,
+    dataset_effect_csv: Path = None,
 ):
     # Setup aesthetics
     sns.set_theme(style="white", context="paper", font_scale=1.4)
@@ -228,6 +259,9 @@ def main(
     cohorts = ["RUMC", "PLCO", "IMP", "UHC"]
     settings = ["RUMC", "RUMC+TCGA"]
 
+    # Unified color scale across all figures (pairwise + dataset-effect)
+    vlim = compute_global_vlim(pairwise_tests_dir, settings, cohorts, dataset_effect_csv)
+
     for setting in settings:
         plot_all_cohorts_grid(
             setting=setting,
@@ -236,6 +270,7 @@ def main(
             encoders=encoders,
             cohorts=cohorts,
             n_samples_dict=n_samples_dict,
+            vlim=vlim,
         )
 
 
@@ -246,5 +281,6 @@ if __name__ == "__main__":
         output_dir=Path(args.output_dir),
         pairwise_tests_dir=Path(args.pairwise_tests_dir),
         config_path=Path(args.config_file),
+        dataset_effect_csv=Path(args.dataset_effect_csv),
     )
 

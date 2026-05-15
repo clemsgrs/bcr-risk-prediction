@@ -41,7 +41,7 @@ def main(config, training_set: str, num_folds: int = 5, verbose: bool = False) -
 
     if training_set not in config["model_info"]:
         raise ValueError(f"Unknown training_set: {training_set}, must be one of {list(config['model_info'].keys())}")
-    
+
     model_info = config["model_info"][training_set]
 
     labels = preprocess_labels(config)
@@ -109,7 +109,7 @@ def main(config, training_set: str, num_folds: int = 5, verbose: bool = False) -
                 df.event_time.values,
                 df.ensemble.values,
             )[0]
-            
+
             rows.update({"ens_c_index": f"{cindex_ensemble:.3f}"})
 
             # get c-index when combining CAPRA-S + and model
@@ -147,7 +147,7 @@ def main(config, training_set: str, num_folds: int = 5, verbose: bool = False) -
 
         summary_df = pd.DataFrame(summary_rows)
         summary_dfs.append(summary_df)
-    
+
     summary_df = pd.concat(summary_dfs, ignore_index=True)
     return summary_df
 
@@ -160,20 +160,20 @@ if __name__ == "__main__":
 
     with open(args.config_file, "r") as f:
         config = yaml.safe_load(f)
-    
+
     dfs = []
     for training_set in ["rumc", "rumc+tcga"]:
         if verbose:
             print(f"Processing training set: {training_set}")
         df_ = main(config, training_set, verbose=verbose)
         dfs.append(df_)
-    
+
     df = pd.concat(dfs, ignore_index=True)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out_csv = output_dir / "summary.csv"
-    
+
     df.to_csv(out_csv, index=False)
     print(f"Summary saved to {out_csv}")
     print()
@@ -185,11 +185,11 @@ if __name__ == "__main__":
     else:
         display_cols.append("combined_c_index_ens")
         display_cols.extend(["ens_hr_95_ci", "ens_p_value"])
-    
+
     for tset in df.training_set.unique():
         print(f"--- Training Set: {tset} ---")
         subset_df = df[df.training_set == tset][display_cols]
-        
+
         table = []
         prev_test_set = None
         for _, row in subset_df.iterrows():

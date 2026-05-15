@@ -309,7 +309,7 @@ def main(
     if not csv_path.exists():
         print(f"Error: {csv_path} not found. Please run summary.py first.")
         return
-    
+
     if not config_path.exists():
         print(f"Error: {config_path} not found.")
         return
@@ -324,10 +324,10 @@ def main(
     # Parse columns
     summary_df["CIndex"] = summary_df.ens_c_index.astype(float)
     summary_df["CIndexStd"] = summary_df.model_c_index.apply(lambda x: float(x.split(" ± ")[1]))
-    
+
     summary_df["CombinedCIndex"] = summary_df.combined_c_index_ens.astype(float)
     summary_df["CombinedCIndexStd"] = summary_df.combined_c_index_avg.apply(lambda x: float(x.split(" ± ")[1]))
-    
+
     summary_df["CapraSCIndex"] = summary_df.capra_s_c_index.astype(float)
 
     # Use cohorts present in the summary data, ordering them by name

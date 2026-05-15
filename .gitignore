@@ -176,3 +176,4 @@ cython_debug/
 # custom
 output/
 **/output/
+.claude/

@@ -13,6 +13,7 @@ def get_args_parser(add_help: bool = True):
     default_outdir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "figures"))
     default_csv = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset-effect.csv"))
     default_config = os.path.join(os.path.dirname(__file__), "config.yml")
+    default_pairwise_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "pairwise-tests"))
     parser.add_argument(
         "-o", "--output-dir", type=str, default=default_outdir, help="output directory for saving figures",
     )
@@ -20,9 +21,38 @@ def get_args_parser(add_help: bool = True):
         "--csv", type=str, default=default_csv, help="path to the dataset effect csv file",
     )
     parser.add_argument(
+        "--pairwise-tests-dir", type=str, default=default_pairwise_dir,
+        help="directory containing pairwise test CSVs (used for unified color scale)",
+    )
+    parser.add_argument(
         "--config-file", type=str, default=default_config, help="path to the config yaml file",
     )
     return parser
+
+
+def compute_global_vlim(
+    dataset_effect_csv: Path,
+    pairwise_tests_dir: Path,
+    settings: list,
+    cohorts: list,
+) -> float:
+    """Compute a unified color limit from dataset-effect.csv and all pairwise CSVs."""
+    all_abs = []
+    if dataset_effect_csv.exists():
+        df = pd.read_csv(dataset_effect_csv)
+        if "delta" in df.columns:
+            all_abs.extend(df["delta"].abs().dropna().tolist())
+    for setting in settings:
+        for cohort in cohorts:
+            fpath = pairwise_tests_dir / f"pairwise-{cohort}-{setting}.csv"
+            if fpath.exists():
+                df = pd.read_csv(fpath)
+                if "delta" in df.columns:
+                    all_abs.extend(df["delta"].abs().dropna().tolist())
+    if not all_abs:
+        return 0.001
+    vmax = float(max(all_abs))
+    return float(np.ceil(vmax * 1000) / 1000.0)
 
 
 def _standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -60,11 +90,11 @@ def build_mats(df: pd.DataFrame, cohorts, encoders):
     return M, Q
 
 
-def plot_heatmap(M, Q, cohorts, encoders, title, output_dir, outname="heatmap-dataset-effect", sig_alpha=0.05):
-    # Symmetric color scale around 0
-    vmax = np.nanmax(np.abs(M))
-    vmax = 0.001 if not np.isfinite(vmax) or vmax == 0 else vmax
-    vlim = float(np.ceil(vmax * 1000) / 1000.0)
+def plot_heatmap(M, Q, cohorts, encoders, title, output_dir, outname="heatmap-dataset-effect", sig_alpha=0.05, vlim=None):
+    if vlim is None:
+        vmax = np.nanmax(np.abs(M))
+        vmax = 0.001 if not np.isfinite(vmax) or vmax == 0 else vmax
+        vlim = float(np.ceil(vmax * 1000) / 1000.0)
 
     fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
     ax.set_facecolor("#f7f7f7")
@@ -123,12 +153,14 @@ def main(
     *,
     output_dir: Path,
     csv_path: Path,
+    pairwise_tests_dir: Path = None,
 ):
     sns.set_theme(style="white", context="paper", font_scale=1.4)
 
     # Fix row/col order for consistent figures
     cohorts = ["RUMC", "PLCO", "IMP", "UHC"]
     encoders = ["Prost40M", "UNI", "Virchow2", "H-optimus-0"]
+    settings = ["RUMC", "RUMC+TCGA"]
 
     if not csv_path.exists():
         print(f"Error: {csv_path} not found. Please run statistical-testing.py first.")
@@ -139,11 +171,15 @@ def main(
 
     M, Q = build_mats(df, cohorts, encoders)
 
+    # Unified color scale across all figures (pairwise + dataset-effect)
+    vlim = compute_global_vlim(csv_path, pairwise_tests_dir or Path("."), settings, cohorts)
+
     plot_heatmap(
         M, Q, cohorts, encoders,
         title=None,
         output_dir=output_dir,
         sig_alpha=0.05,
+        vlim=vlim,
     )
 
 
@@ -155,4 +191,5 @@ if __name__ == "__main__":
     main(
         output_dir=output_dir,
         csv_path=Path(args.csv),
+        pairwise_tests_dir=Path(args.pairwise_tests_dir),
     )
