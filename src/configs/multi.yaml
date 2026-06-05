@@ -24,6 +24,18 @@ model:
   embed_dim_slide: 192
   mask_attn: False
 
+dctm:
+  enable: false
+  variant: "shift"
+  basis_features: 6
+  family: "logistic"
+  evaluation:
+    horizon_quantiles: [0.25, 0.5, 0.75, 1.0]
+    horizon_source: "train_events"
+    compute_ibs: true
+    ibs_num_times: 100
+    risk_alias_quantile: 1.0
+
 training:
   nepochs: 100
   batch_size: 1

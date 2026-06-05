@@ -19,6 +19,17 @@ import tqdm
 import wandb
 
 from src.models.hipt_dctm import LocalHIPTWithDCTM
+from src.train.dctm_eval import (
+    DCTMHorizon,
+    add_horizon_risks_to_frame,
+    compute_dctm_metrics,
+    compute_train_event_horizons,
+    deserialize_horizons,
+    horizon_label,
+    make_ibs_grid,
+    normalize_time,
+    serialize_horizons,
+)
 from hipt.src.data.dataset import DatasetOptions, ExtractedFeaturesSurvivalDataset
 from hipt.src.utils import (
     EarlyStopping,
@@ -29,7 +40,6 @@ from hipt.src.utils import (
     update_log_dict,
 )
 from hipt.src.utils.train_utils import collate_features_survival
-from hipt.src.utils.metrics import get_metrics
 
 
 def get_args_parser(add_help: bool = True):
@@ -52,9 +62,75 @@ def get_args_parser(add_help: bool = True):
     return parser
 
 
-def normalize_time(event_time: np.ndarray, max_time: float) -> np.ndarray:
-    """Normalize event times to [0, 1] range."""
-    return np.clip(event_time / max_time, 0.0, 1.0 - 1e-7)
+def get_dctm_evaluation_options(cfg):
+    """Read DCTM evaluation options with backward-compatible defaults."""
+    dctm_cfg = cfg.get("dctm", {})
+    eval_cfg = dctm_cfg.get("evaluation", {}) if dctm_cfg else {}
+    return {
+        "horizon_quantiles": list(
+            eval_cfg.get("horizon_quantiles", [0.25, 0.5, 0.75, 1.0])
+        ),
+        "horizon_source": eval_cfg.get("horizon_source", "train_events"),
+        "compute_ibs": bool(eval_cfg.get("compute_ibs", True)),
+        "ibs_num_times": int(eval_cfg.get("ibs_num_times", 100)),
+        "risk_alias_quantile": float(eval_cfg.get("risk_alias_quantile", 1.0)),
+    }
+
+
+def get_survival_arrays(df: pd.DataFrame, time_col: str):
+    event_times = df[time_col].to_numpy(dtype=float)
+    events = 1 - df["censored"].to_numpy(dtype=float)
+    return event_times, events
+
+
+def build_dctm_evaluation_context(cfg, train_df: pd.DataFrame, max_time: float):
+    eval_options = get_dctm_evaluation_options(cfg)
+    if eval_options["horizon_source"] != "train_events":
+        raise ValueError("Only dctm.evaluation.horizon_source='train_events' is supported")
+
+    horizons = compute_train_event_horizons(
+        train_df,
+        time_col=cfg.label_name,
+        quantiles=eval_options["horizon_quantiles"],
+        max_time=max_time,
+    )
+    risk_alias_label = horizon_label(eval_options["risk_alias_quantile"])
+    if risk_alias_label not in {h.label for h in horizons}:
+        raise ValueError(
+            f"risk_alias_quantile={eval_options['risk_alias_quantile']} does not "
+            "match any configured horizon quantile"
+        )
+
+    train_event_times, train_events = get_survival_arrays(train_df, cfg.label_name)
+    max_ibs_time = max(h.time for h in horizons)
+    ibs_times = make_ibs_grid(max_ibs_time, eval_options["ibs_num_times"])
+    return {
+        "horizons": horizons,
+        "risk_alias_label": risk_alias_label,
+        "compute_ibs_metric": eval_options["compute_ibs"],
+        "ibs_times": ibs_times,
+        "train_event_times": train_event_times,
+        "train_events": train_events,
+    }
+
+
+def predict_dctm_evaluation_outputs(
+    model: torch.nn.Module,
+    x: torch.Tensor,
+    horizons: list[DCTMHorizon],
+    ibs_times: np.ndarray,
+    max_time: float,
+    compute_ibs_metric: bool,
+):
+    horizon_times = np.asarray([h.normalized_time for h in horizons], dtype=float)
+    risks = model.predict_transform(x, horizon_times).detach().cpu().numpy()
+
+    survival = None
+    if compute_ibs_metric:
+        survival_times_norm = normalize_time(ibs_times, max_time)
+        survival = model.predict_survival(x, survival_times_norm).detach().cpu().numpy()
+
+    return risks, survival
 
 
 def train_dctm(
@@ -64,6 +140,12 @@ def train_dctm(
     optimizer: torch.optim.Optimizer,
     max_time: float,
     metric_names: list[str],
+    horizons: list[DCTMHorizon],
+    risk_alias_label: str,
+    train_event_times: np.ndarray,
+    train_events: np.ndarray,
+    compute_ibs_metric: bool = True,
+    ibs_times: np.ndarray | None = None,
     batch_size: int = 1,
     collate_fn=partial(collate_features_survival, label_type="int"),
     gradient_accumulation: int | None = None,
@@ -73,8 +155,12 @@ def train_dctm(
     """Training loop for DCTM survival model."""
     model.train()
     epoch_loss = 0
-    censoring, event_times, risk_scores = [], [], []
+    censoring, event_times = [], []
+    risks_by_label = {h.label: [] for h in horizons}
+    survival_curves = []
     idxs = []
+    if ibs_times is None:
+        ibs_times = np.asarray([h.time for h in horizons], dtype=float)
 
     sampler = torch.utils.data.RandomSampler(dataset)
     loader = torch.utils.data.DataLoader(
@@ -124,26 +210,47 @@ def train_dctm(
                 optimizer.step()
                 optimizer.zero_grad()
 
-            # Compute risk score: log cumulative hazard at t=1 (max time)
             with torch.no_grad():
-                risk = model(x, np.array([1.0])).detach()
-                risk_scores.append(risk.cpu().item())
+                risks, survival = predict_dctm_evaluation_outputs(
+                    model,
+                    x,
+                    horizons=horizons,
+                    ibs_times=ibs_times,
+                    max_time=max_time,
+                    compute_ibs_metric=compute_ibs_metric,
+                )
+                for horizon, risk in zip(horizons, risks):
+                    risks_by_label[horizon.label].append(float(risk))
+                if survival is not None:
+                    survival_curves.append(survival)
 
             censoring.append(censored.item())
             event_times.append(event_time.item())
             idxs.extend(list(idx))
 
     assert len(idxs) == len(set(idxs)), "idxs must be unique"
-    dataset.df.loc[idxs, "risk"] = risk_scores
-
-    event_indicator = [bool(1 - c) for c in censoring]
-    metrics = get_metrics(
-        metric_names,
-        risk_scores,
-        event_times,
-        event_indicator=event_indicator,
+    add_horizon_risks_to_frame(
+        dataset.df,
+        idxs,
+        risks_by_label,
+        risk_alias_label=risk_alias_label,
     )
 
+    event_times = np.asarray(event_times, dtype=float)
+    events = 1 - np.asarray(censoring, dtype=float)
+    survival_matrix = np.asarray(survival_curves) if survival_curves else None
+    metrics = compute_dctm_metrics(
+        metric_names,
+        risks_by_label={k: np.asarray(v, dtype=float) for k, v in risks_by_label.items()},
+        event_times=event_times,
+        events=events,
+        horizons=horizons,
+        survival=survival_matrix,
+        survival_times=ibs_times,
+        train_event_times=train_event_times,
+        train_events=train_events,
+        compute_ibs_metric=compute_ibs_metric,
+    )
     results.update(metrics)
     train_loss = epoch_loss / len(loader)
     results["loss"] = train_loss
@@ -157,6 +264,12 @@ def tune_dctm(
     dataset: torch.utils.data.Dataset,
     max_time: float,
     metric_names: list[str],
+    horizons: list[DCTMHorizon],
+    risk_alias_label: str,
+    train_event_times: np.ndarray,
+    train_events: np.ndarray,
+    compute_ibs_metric: bool = True,
+    ibs_times: np.ndarray | None = None,
     batch_size: int = 1,
     collate_fn=partial(collate_features_survival, label_type="int"),
     num_workers: int = 0,
@@ -165,8 +278,12 @@ def tune_dctm(
     """Validation loop for DCTM survival model."""
     model.eval()
     epoch_loss = 0
-    censoring, event_times, risk_scores = [], [], []
+    censoring, event_times = [], []
+    risks_by_label = {h.label: [] for h in horizons}
+    survival_curves = []
     idxs = []
+    if ibs_times is None:
+        ibs_times = np.asarray([h.time for h in horizons], dtype=float)
 
     sampler = torch.utils.data.SequentialSampler(dataset)
     loader = torch.utils.data.DataLoader(
@@ -201,24 +318,45 @@ def tune_dctm(
                 loss = model.compute_loss(x, time_norm, event)
                 epoch_loss += loss.item()
 
-                # Compute risk score
-                risk = model(x, np.array([1.0])).detach()
-                risk_scores.append(risk.cpu().item())
+                risks, survival = predict_dctm_evaluation_outputs(
+                    model,
+                    x,
+                    horizons=horizons,
+                    ibs_times=ibs_times,
+                    max_time=max_time,
+                    compute_ibs_metric=compute_ibs_metric,
+                )
+                for horizon, risk in zip(horizons, risks):
+                    risks_by_label[horizon.label].append(float(risk))
+                if survival is not None:
+                    survival_curves.append(survival)
                 censoring.append(censored.item())
                 event_times.append(event_time.item())
                 idxs.extend(list(idx))
 
     assert len(idxs) == len(set(idxs)), "idxs must be unique"
-    dataset.df.loc[idxs, "risk"] = risk_scores
-
-    event_indicator = [bool(1 - c) for c in censoring]
-    metrics = get_metrics(
-        metric_names,
-        risk_scores,
-        event_times,
-        event_indicator=event_indicator,
+    add_horizon_risks_to_frame(
+        dataset.df,
+        idxs,
+        risks_by_label,
+        risk_alias_label=risk_alias_label,
     )
 
+    event_times = np.asarray(event_times, dtype=float)
+    events = 1 - np.asarray(censoring, dtype=float)
+    survival_matrix = np.asarray(survival_curves) if survival_curves else None
+    metrics = compute_dctm_metrics(
+        metric_names,
+        risks_by_label={k: np.asarray(v, dtype=float) for k, v in risks_by_label.items()},
+        event_times=event_times,
+        events=events,
+        horizons=horizons,
+        survival=survival_matrix,
+        survival_times=ibs_times,
+        train_event_times=train_event_times,
+        train_events=train_events,
+        compute_ibs_metric=compute_ibs_metric,
+    )
     results.update(metrics)
     tune_loss = epoch_loss / len(loader)
     results["loss"] = tune_loss
@@ -231,6 +369,12 @@ def inference_dctm(
     dataset: torch.utils.data.Dataset,
     max_time: float,
     metric_names: list[str],
+    horizons: list[DCTMHorizon],
+    risk_alias_label: str,
+    train_event_times: np.ndarray,
+    train_events: np.ndarray,
+    compute_ibs_metric: bool = True,
+    ibs_times: np.ndarray | None = None,
     batch_size: int = 1,
     collate_fn=partial(collate_features_survival, label_type="int"),
     num_workers: int = 0,
@@ -239,8 +383,12 @@ def inference_dctm(
     """Inference for DCTM survival model."""
     model.eval()
     epoch_loss = 0
-    censoring, event_times, risk_scores = [], [], []
+    censoring, event_times = [], []
+    risks_by_label = {h.label: [] for h in horizons}
+    survival_curves = []
     idxs = []
+    if ibs_times is None:
+        ibs_times = np.asarray([h.time for h in horizons], dtype=float)
 
     sampler = torch.utils.data.SequentialSampler(dataset)
     loader = torch.utils.data.DataLoader(
@@ -275,24 +423,45 @@ def inference_dctm(
                 loss = model.compute_loss(x, time_norm, event)
                 epoch_loss += loss.item()
 
-                # Compute risk score
-                risk = model(x, np.array([1.0])).detach()
-                risk_scores.append(risk.cpu().item())
+                risks, survival = predict_dctm_evaluation_outputs(
+                    model,
+                    x,
+                    horizons=horizons,
+                    ibs_times=ibs_times,
+                    max_time=max_time,
+                    compute_ibs_metric=compute_ibs_metric,
+                )
+                for horizon, risk in zip(horizons, risks):
+                    risks_by_label[horizon.label].append(float(risk))
+                if survival is not None:
+                    survival_curves.append(survival)
                 censoring.append(censored.item())
                 event_times.append(event_time.item())
                 idxs.extend(list(idx))
 
     assert len(idxs) == len(set(idxs)), "idxs must be unique"
-    dataset.df.loc[idxs, "risk"] = risk_scores
-
-    event_indicator = [bool(1 - c) for c in censoring]
-    metrics = get_metrics(
-        metric_names,
-        risk_scores,
-        event_times,
-        event_indicator=event_indicator,
+    add_horizon_risks_to_frame(
+        dataset.df,
+        idxs,
+        risks_by_label,
+        risk_alias_label=risk_alias_label,
     )
 
+    event_times = np.asarray(event_times, dtype=float)
+    events = 1 - np.asarray(censoring, dtype=float)
+    survival_matrix = np.asarray(survival_curves) if survival_curves else None
+    metrics = compute_dctm_metrics(
+        metric_names,
+        risks_by_label={k: np.asarray(v, dtype=float) for k, v in risks_by_label.items()},
+        event_times=event_times,
+        events=events,
+        horizons=horizons,
+        survival=survival_matrix,
+        survival_times=ibs_times,
+        train_event_times=train_event_times,
+        train_events=train_events,
+        compute_ibs_metric=compute_ibs_metric,
+    )
     results.update(metrics)
     results["loss"] = epoch_loss / len(loader)
     return results
@@ -323,9 +492,23 @@ def create_model(cfg, device):
 class EarlyStoppingDCTM(EarlyStopping):
     """Extended EarlyStopping that saves max_time with checkpoint."""
 
-    def __init__(self, *args, max_time: float = 1.0, **kwargs):
+    def __init__(
+        self,
+        *args,
+        max_time: float = 1.0,
+        horizons: list[DCTMHorizon] | None = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.max_time = max_time
+        self.horizons = horizons or []
+
+    def _checkpoint(self, model):
+        return {
+            "model_state_dict": model.state_dict(),
+            "max_time": self.max_time,
+            "horizons": serialize_horizons(self.horizons),
+        }
 
     def __call__(self, epoch, model, results):
         score = results[self.tracking]
@@ -336,10 +519,7 @@ class EarlyStoppingDCTM(EarlyStopping):
             self.best_score = score
             self.best_epoch = epoch
             fname = "best.pt"
-            torch.save(
-                {"model_state_dict": model.state_dict(), "max_time": self.max_time},
-                Path(self.checkpoint_dir, fname),
-            )
+            torch.save(self._checkpoint(model), Path(self.checkpoint_dir, fname))
             self.counter = 0
 
         elif score < self.best_score:
@@ -355,16 +535,10 @@ class EarlyStoppingDCTM(EarlyStopping):
 
         if self.save_all:
             fname = f"epoch_{epoch+1}.pt"
-            torch.save(
-                {"model_state_dict": model.state_dict(), "max_time": self.max_time},
-                Path(self.checkpoint_dir, fname),
-            )
+            torch.save(self._checkpoint(model), Path(self.checkpoint_dir, fname))
 
         # override latest
-        torch.save(
-            {"model_state_dict": model.state_dict(), "max_time": self.max_time},
-            Path(self.checkpoint_dir, "latest.pt"),
-        )
+        torch.save(self._checkpoint(model), Path(self.checkpoint_dir, "latest.pt"))
 
 
 def main(args):
@@ -391,6 +565,7 @@ def main(args):
     # Compute max_time from training set only (avoid data leakage)
     max_time = train_df[cfg.label_name].max()
     print(f"Max time from training set: {max_time}")
+    eval_context = build_dctm_evaluation_context(cfg, train_df, max_time)
 
     train_dataset_options = DatasetOptions(
         df=train_df,
@@ -439,6 +614,7 @@ def main(args):
         checkpoint_dir=checkpoint_dir,
         save_all=cfg.early_stopping.save_all,
         max_time=max_time,
+        horizons=eval_context["horizons"],
     )
 
     stop = False
@@ -465,6 +641,12 @@ def main(args):
                 optimizer,
                 max_time,
                 metric_names=cfg.metrics,
+                horizons=eval_context["horizons"],
+                risk_alias_label=eval_context["risk_alias_label"],
+                train_event_times=eval_context["train_event_times"],
+                train_events=eval_context["train_events"],
+                compute_ibs_metric=eval_context["compute_ibs_metric"],
+                ibs_times=eval_context["ibs_times"],
                 batch_size=cfg.training.batch_size,
                 gradient_accumulation=cfg.training.gradient_accumulation,
                 num_workers=num_workers,
@@ -485,6 +667,12 @@ def main(args):
                     tune_dataset,
                     max_time,
                     metric_names=cfg.metrics,
+                    horizons=eval_context["horizons"],
+                    risk_alias_label=eval_context["risk_alias_label"],
+                    train_event_times=eval_context["train_event_times"],
+                    train_events=eval_context["train_events"],
+                    compute_ibs_metric=eval_context["compute_ibs_metric"],
+                    ibs_times=eval_context["ibs_times"],
                     batch_size=cfg.tuning.batch_size,
                     num_workers=num_workers,
                     device=device,
@@ -528,6 +716,9 @@ def main(args):
     checkpoint = torch.load(best_model_fp)
     model.load_state_dict(checkpoint["model_state_dict"])
     saved_max_time = checkpoint["max_time"]
+    saved_horizons = deserialize_horizons(
+        checkpoint.get("horizons", eval_context["horizons"])
+    )
 
     # Tune set inference
     best_tune_results = inference_dctm(
@@ -535,6 +726,12 @@ def main(args):
         tune_dataset,
         saved_max_time,
         metric_names=cfg.metrics,
+        horizons=saved_horizons,
+        risk_alias_label=eval_context["risk_alias_label"],
+        train_event_times=eval_context["train_event_times"],
+        train_events=eval_context["train_events"],
+        compute_ibs_metric=eval_context["compute_ibs_metric"],
+        ibs_times=eval_context["ibs_times"],
         batch_size=1,
         num_workers=num_workers,
         device=device,
@@ -558,6 +755,12 @@ def main(args):
             test_dataset,
             saved_max_time,
             metric_names=cfg.metrics,
+            horizons=saved_horizons,
+            risk_alias_label=eval_context["risk_alias_label"],
+            train_event_times=eval_context["train_event_times"],
+            train_events=eval_context["train_events"],
+            compute_ibs_metric=eval_context["compute_ibs_metric"],
+            ibs_times=eval_context["ibs_times"],
             batch_size=1,
             num_workers=num_workers,
             device=device,

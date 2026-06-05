@@ -19,6 +19,7 @@ from DCTM.DCTM import DCTM_general_shift, DCTM_general_shift_scale, DCTM_general
 from hipt.src.models.vision_transformer import vit4k_xs
 from hipt.src.models.components import Attn_Net_Gated
 from hipt.src.models.utils import update_state_dict
+from src.train.dctm_eval import dctm_survival_from_transform
 
 
 class LocalHIPTWithDCTM(nn.Module):
@@ -67,6 +68,7 @@ class LocalHIPTWithDCTM(nn.Module):
         self.npatch = int(region_size // patch_size)
         self.num_register_tokens = num_register_tokens
         self.embed_dim_slide = embed_dim_slide
+        self.family = family
 
         checkpoint_key = "teacher"
 
@@ -197,7 +199,7 @@ class LocalHIPTWithDCTM(nn.Module):
         pct_thresh: float = 0.0,
     ) -> torch.Tensor:
         """
-        Forward pass returning log cumulative hazard.
+        Forward pass returning the DCTM transformation value h(t|x).
 
         Args:
             x: Patch features of shape [1, num_regions, num_patches, embed_dim_patch]
@@ -206,10 +208,31 @@ class LocalHIPTWithDCTM(nn.Module):
             pct_thresh: Threshold for masking
 
         Returns:
-            Log cumulative hazard of shape [batch_size]
+            DCTM transformation value of shape [batch_size]
         """
         embedding = self.get_embedding(x, pct=pct, pct_thresh=pct_thresh)
         return self.dctm_head(embedding, time)
+
+    def predict_transform(
+        self,
+        x: torch.Tensor,
+        time: np.ndarray,
+        pct: torch.Tensor | None = None,
+        pct_thresh: float = 0.0,
+    ) -> torch.Tensor:
+        """Predict DCTM transformation values h(t|x) at normalized times."""
+        return self.forward(x, time, pct=pct, pct_thresh=pct_thresh)
+
+    def predict_survival(
+        self,
+        x: torch.Tensor,
+        time: np.ndarray,
+        pct: torch.Tensor | None = None,
+        pct_thresh: float = 0.0,
+    ) -> torch.Tensor:
+        """Predict survival probabilities S(t|x) at normalized times."""
+        transform = self.predict_transform(x, time, pct=pct, pct_thresh=pct_thresh)
+        return dctm_survival_from_transform(transform, self.family)
 
     def compute_loss(
         self,

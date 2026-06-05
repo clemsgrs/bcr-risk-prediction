@@ -36,7 +36,8 @@ from src.train.survival_dctm import (
     inference_dctm,
     create_model,
     EarlyStoppingDCTM,
-    normalize_time,
+    build_dctm_evaluation_context,
+    deserialize_horizons,
 )
 
 
@@ -112,6 +113,7 @@ def main(args):
         # Compute max_time from THIS fold's training set only
         max_time = train_df[cfg.label_name].max()
         print(f"Max time from training set (fold {i}): {max_time}")
+        eval_context = build_dctm_evaluation_context(cfg, train_df, max_time)
 
         train_dataset_options = DatasetOptions(
             df=train_df,
@@ -160,6 +162,7 @@ def main(args):
             checkpoint_dir=checkpoint_dir,
             save_all=cfg.early_stopping.save_all,
             max_time=max_time,
+            horizons=eval_context["horizons"],
         )
 
         stop = False
@@ -189,6 +192,12 @@ def main(args):
                     optimizer,
                     max_time,
                     metric_names=cfg.metrics,
+                    horizons=eval_context["horizons"],
+                    risk_alias_label=eval_context["risk_alias_label"],
+                    train_event_times=eval_context["train_event_times"],
+                    train_events=eval_context["train_events"],
+                    compute_ibs_metric=eval_context["compute_ibs_metric"],
+                    ibs_times=eval_context["ibs_times"],
                     batch_size=cfg.training.batch_size,
                     gradient_accumulation=cfg.training.gradient_accumulation,
                     num_workers=num_workers,
@@ -214,6 +223,12 @@ def main(args):
                         tune_dataset,
                         max_time,
                         metric_names=cfg.metrics,
+                        horizons=eval_context["horizons"],
+                        risk_alias_label=eval_context["risk_alias_label"],
+                        train_event_times=eval_context["train_event_times"],
+                        train_events=eval_context["train_events"],
+                        compute_ibs_metric=eval_context["compute_ibs_metric"],
+                        ibs_times=eval_context["ibs_times"],
                         batch_size=cfg.tuning.batch_size,
                         num_workers=num_workers,
                         device=device,
@@ -269,6 +284,9 @@ def main(args):
         checkpoint = torch.load(best_model_fp)
         model.load_state_dict(checkpoint["model_state_dict"])
         saved_max_time = checkpoint["max_time"]
+        saved_horizons = deserialize_horizons(
+            checkpoint.get("horizons", eval_context["horizons"])
+        )
 
         # Tune set inference
         best_tune_results = inference_dctm(
@@ -276,6 +294,12 @@ def main(args):
             tune_dataset,
             saved_max_time,
             metric_names=cfg.metrics,
+            horizons=saved_horizons,
+            risk_alias_label=eval_context["risk_alias_label"],
+            train_event_times=eval_context["train_event_times"],
+            train_events=eval_context["train_events"],
+            compute_ibs_metric=eval_context["compute_ibs_metric"],
+            ibs_times=eval_context["ibs_times"],
             batch_size=1,
             num_workers=num_workers,
             device=device,
@@ -300,6 +324,12 @@ def main(args):
                 test_dataset,
                 saved_max_time,
                 metric_names=cfg.metrics,
+                horizons=saved_horizons,
+                risk_alias_label=eval_context["risk_alias_label"],
+                train_event_times=eval_context["train_event_times"],
+                train_events=eval_context["train_events"],
+                compute_ibs_metric=eval_context["compute_ibs_metric"],
+                ibs_times=eval_context["ibs_times"],
                 batch_size=1,
                 num_workers=num_workers,
                 device=device,
