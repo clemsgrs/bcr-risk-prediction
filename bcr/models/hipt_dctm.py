@@ -14,12 +14,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-from DCTM.DCTM import DCTM_general_shift, DCTM_general_shift_scale, DCTM_general
+from DCTM.dctm import DCTM_general_shift, DCTM_general_shift_scale, DCTM_general
 
 from hipt.src.models.vision_transformer import vit4k_xs
 from hipt.src.models.components import Attn_Net_Gated
 from hipt.src.models.utils import update_state_dict
-from src.train.dctm_eval import dctm_survival_from_transform
+from bcr.train.dctm_eval import dctm_survival_from_transform
 
 
 class LocalHIPTWithDCTM(nn.Module):

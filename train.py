@@ -5,7 +5,7 @@ import sys
 
 from pathlib import Path
 
-from src.utils import write_config, get_cfg_from_args
+from bcr.utils import write_config, get_cfg_from_args
 
 
 def get_args_parser(add_help: bool = True):
@@ -33,7 +33,7 @@ def survival(root_dir, config_file, output_dir):
     print(f"Running {root_dir}/train/survival.py...")
     cmd = [
         sys.executable,
-        "src/train/survival.py",
+        "bcr/train/survival.py",
         "--config-file",
         os.path.abspath(config_file),
         "--output-dir",
@@ -51,7 +51,7 @@ def survival_multi(root_dir, config_file, output_dir):
     print(f"Running {root_dir}/train/survival-multi.py...")
     cmd = [
         sys.executable,
-        "src/train/survival-multi.py",
+        "bcr/train/survival-multi.py",
         "--config-file",
         os.path.abspath(config_file),
         "--output-dir",
@@ -66,16 +66,16 @@ def survival_multi(root_dir, config_file, output_dir):
 
 def survival_dctm(root_dir, config_file, output_dir):
     """Run DCTM survival training (single-fold)."""
-    print(f"Running {root_dir}/src/train/survival_dctm.py...")
+    print(f"Running {root_dir}/bcr/train/survival_dctm.py...")
     cmd = [
         sys.executable,
-        "src/train/survival_dctm.py",
+        "bcr/train/survival_dctm.py",
         "--config-file",
         os.path.abspath(config_file),
         "--output-dir",
         os.path.abspath(output_dir),
     ]
-    result = subprocess.run(cmd, cwd=root_dir)
+    result = subprocess.run(cmd, cwd=root_dir, env=build_dctm_env(root_dir))
     if result.returncode != 0:
         print("DCTM survival training failed. Exiting.")
         sys.exit(result.returncode)
@@ -83,16 +83,16 @@ def survival_dctm(root_dir, config_file, output_dir):
 
 def survival_dctm_multi(root_dir, config_file, output_dir):
     """Run DCTM survival training (multi-fold cross-validation)."""
-    print(f"Running {root_dir}/src/train/survival_dctm_multi.py...")
+    print(f"Running {root_dir}/bcr/train/survival_dctm_multi.py...")
     cmd = [
         sys.executable,
-        "src/train/survival_dctm_multi.py",
+        "bcr/train/survival_dctm_multi.py",
         "--config-file",
         os.path.abspath(config_file),
         "--output-dir",
         os.path.abspath(output_dir),
     ]
-    result = subprocess.run(cmd, cwd=root_dir)
+    result = subprocess.run(cmd, cwd=root_dir, env=build_dctm_env(root_dir))
     if result.returncode != 0:
         print("Multi-fold DCTM survival training failed. Exiting.")
         sys.exit(result.returncode)
@@ -105,6 +105,21 @@ def build_training_env(root_dir: Path):
     env["PYTHONPATH"] = (
         f"{root_dir}{os.pathsep}{pythonpath}" if pythonpath else root_dir
     )
+    return env
+
+
+def build_dctm_env(root_dir: Path):
+    # DCTM scripts need:
+    #   project root  — for bcr.* and DCTM.* (namespace pkg) imports
+    #   hipt/         — for hipt's internal `from src.*` imports
+    #   DCTM/         — so `from DCTM import bernstein` resolves inside DCTM/DCTM/
+    env = os.environ.copy()
+    project_dir = str(root_dir.resolve())
+    hipt_dir = str((root_dir / "hipt").resolve())
+    dctm_dir = str((root_dir / "DCTM").resolve())
+    pythonpath = env.get("PYTHONPATH", "")
+    parts = [project_dir, hipt_dir, dctm_dir] + [p for p in pythonpath.split(os.pathsep) if p]
+    env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(parts))
     return env
 
 

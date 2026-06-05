@@ -3,7 +3,7 @@ import os
 
 from omegaconf import OmegaConf
 
-from src.configs import default_config
+from bcr.configs import default_config
 
 logger = logging.getLogger("bcr-risk-prediction")
 

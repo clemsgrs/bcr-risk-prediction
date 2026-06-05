@@ -7,6 +7,7 @@ survival head for continuous-time survival analysis across multiple folds.
 
 import argparse
 import gc
+import logging
 import multiprocessing as mp
 import os
 import time
@@ -21,6 +22,7 @@ import wandb
 
 
 from hipt.src.data.dataset import DatasetOptions, ExtractedFeaturesSurvivalDataset
+from src.models.parameter_counts import log_trainable_parameter_breakdown
 from hipt.src.utils import (
     EarlyStopping,
     OptimizerFactory,
@@ -30,7 +32,8 @@ from hipt.src.utils import (
     update_log_dict,
 )
 
-from src.train.survival_dctm import (
+from bcr.utils.log_utils import log_best_epoch
+from bcr.train.survival_dctm import (
     train_dctm,
     tune_dctm,
     inference_dctm,
@@ -39,6 +42,8 @@ from src.train.survival_dctm import (
     build_dctm_evaluation_context,
     deserialize_horizons,
 )
+
+logger = logging.getLogger("bcr-risk-prediction")
 
 
 def get_args_parser(add_help: bool = True):
@@ -146,6 +151,7 @@ def main(args):
         print("Initializing model")
         model = create_model(cfg, device)
         print(model)
+        log_trainable_parameter_breakdown(model, logger)
 
         print("Configuring optimizer & scheduler")
         model_params = filter(lambda p: p.requires_grad, model.parameters())
@@ -280,6 +286,7 @@ def main(args):
         # Load best model
         best_model_fp = Path(checkpoint_dir, f"{cfg.testing.retrieve_checkpoint}.pt")
         if cfg.wandb.enable:
+            log_best_epoch(f"train/fold_{i}", early_stopping.best_epoch)
             wandb.save(str(best_model_fp))
         checkpoint = torch.load(best_model_fp)
         model.load_state_dict(checkpoint["model_state_dict"])

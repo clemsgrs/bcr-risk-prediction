@@ -50,26 +50,29 @@ risk = -sum(surv)                   # negative area under survival curve
 
 This is equivalent to negative restricted mean survival time (RMST) over the discrete bins.
 
-### DCTM Risk Score: Log Cumulative Hazard at t=1.0
+### DCTM Risk Scores: Train-Event Horizons
 
-DCTM outputs the log cumulative hazard:
+DCTM outputs a continuous-time transformation score:
 ```
 z = H(t|X) = baseline(t) + shift(X)
 ```
 
-We evaluate at `t=1.0` (normalized maximum follow-up time) to get total accumulated risk:
+By default, evaluation uses the 25th, 50th, 75th, and 100th percentiles of uncensored event times in the training fold. These are logged as `risk_q25`, `risk_q50`, `risk_q75`, and `risk_q100`.
+
 - **Higher z** → higher cumulative hazard → higher risk
 - This is analogous to Cox models using the linear predictor
 
-**Why t=1.0?** Times are normalized to `[0, 1]` where `1.0 = max_time` from training. This captures risk over the entire observation window.
+The plain `risk` column is an alias for `dctm.evaluation.risk_alias_quantile`, which defaults to `1.0` (`risk_q100`). DCTM logs both:
+- `c-index`: full Harrell c-index using the aliased `risk` score, comparable to the regular discrete-bin path.
+- `c-index/q*`: horizon-specific c-index values for each configured train-event quantile.
 
-**Alternative risk scores** (all give identical c-index since they're monotonic transformations):
+For a fixed horizon, monotonic transformations give the same c-index:
 
 | Risk Score | Formula | Notes |
 |------------|---------|-------|
-| Log cumulative hazard | `H(t=1.0)` | Direct from forward pass, fast |
+| Transformation score | `H(t)` | Direct from forward pass, fast |
 | Negative TTE | `-model.predict_tte(x)` | Requires root-finding |
-| Negative survival | `-exp(-H(t=1.0))` | Bounded [0,1] |
+| Negative survival | `-S(t)` | Bounded [0,1] |
 
 For time-specific risk (e.g., 5-year recurrence):
 ```python
@@ -94,10 +97,10 @@ pip install -e hipt/
 
 ```bash
 # discrete-bin survival
-python main.py --config-file config.yaml
+python train.py --config-file config.yaml
 
 # DCTM survival
-python main.py --config-file config.yaml dctm.enable=true
+python train.py --config-file config.yaml dctm.enable=true
 ```
 
 ### Multi-fold cross-validation
@@ -105,7 +108,7 @@ python main.py --config-file config.yaml dctm.enable=true
 Set `data.fold_dir` in your config to point to a directory with `fold-0/`, `fold-1/`, etc., each containing `train.csv`, `tune.csv`, and optionally `test.csv`.
 
 ```bash
-python main.py --config-file config.yaml data.fold_dir=/path/to/folds/
+python train.py --config-file config.yaml data.fold_dir=/path/to/folds/
 ```
 
 ## Data Format
