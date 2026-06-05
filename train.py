@@ -30,10 +30,10 @@ def get_args_parser(add_help: bool = True):
 
 def survival(root_dir, config_file, output_dir):
     root_dir = Path(root_dir).resolve()
-    print(f"Running {root_dir}/train/survival.py...")
+    print(f"Running {root_dir}/src/train/survival.py...")
     cmd = [
         sys.executable,
-        "bcr/train/survival.py",
+        "src/train/survival.py",
         "--config-file",
         os.path.abspath(config_file),
         "--output-dir",
@@ -48,10 +48,10 @@ def survival(root_dir, config_file, output_dir):
 
 def survival_multi(root_dir, config_file, output_dir):
     root_dir = Path(root_dir).resolve()
-    print(f"Running {root_dir}/train/survival-multi.py...")
+    print(f"Running {root_dir}/src/train/survival-multi.py...")
     cmd = [
         sys.executable,
-        "bcr/train/survival-multi.py",
+        "src/train/survival-multi.py",
         "--config-file",
         os.path.abspath(config_file),
         "--output-dir",
