@@ -1,7 +1,7 @@
 data:
   fold_dir: "/data/pathology/projects/clement/leopard/csvs/folds/4-bins"
 
-output_dir: "output"
+output_dir: "output/dctm"
 
 num_classes: 4 # number of bins
 label_name: "label"

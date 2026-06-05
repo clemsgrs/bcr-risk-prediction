@@ -6,6 +6,7 @@ survival head for continuous-time survival analysis.
 """
 
 import argparse
+import logging
 import multiprocessing as mp
 import os
 import time
@@ -18,8 +19,8 @@ import torch
 import tqdm
 import wandb
 
-from src.models.hipt_dctm import LocalHIPTWithDCTM
-from src.train.dctm_eval import (
+from bcr.models.hipt_dctm import LocalHIPTWithDCTM
+from bcr.train.dctm_eval import (
     DCTMHorizon,
     add_horizon_risks_to_frame,
     compute_dctm_metrics,
@@ -31,6 +32,7 @@ from src.train.dctm_eval import (
     serialize_horizons,
 )
 from hipt.src.data.dataset import DatasetOptions, ExtractedFeaturesSurvivalDataset
+from src.models.parameter_counts import log_trainable_parameter_breakdown
 from hipt.src.utils import (
     EarlyStopping,
     OptimizerFactory,
@@ -40,6 +42,8 @@ from hipt.src.utils import (
     update_log_dict,
 )
 from hipt.src.utils.train_utils import collate_features_survival
+
+logger = logging.getLogger("bcr-risk-prediction")
 
 
 def get_args_parser(add_help: bool = True):
@@ -245,6 +249,7 @@ def train_dctm(
         event_times=event_times,
         events=events,
         horizons=horizons,
+        risk_alias_label=risk_alias_label,
         survival=survival_matrix,
         survival_times=ibs_times,
         train_event_times=train_event_times,
@@ -351,6 +356,7 @@ def tune_dctm(
         event_times=event_times,
         events=events,
         horizons=horizons,
+        risk_alias_label=risk_alias_label,
         survival=survival_matrix,
         survival_times=ibs_times,
         train_event_times=train_event_times,
@@ -456,6 +462,7 @@ def inference_dctm(
         event_times=event_times,
         events=events,
         horizons=horizons,
+        risk_alias_label=risk_alias_label,
         survival=survival_matrix,
         survival_times=ibs_times,
         train_event_times=train_event_times,
@@ -598,6 +605,7 @@ def main(args):
     print("Initializing model")
     model = create_model(cfg, device)
     print(model)
+    log_trainable_parameter_breakdown(model, logger)
 
     print("Configuring optimizer & scheduler")
     model_params = filter(lambda p: p.requires_grad, model.parameters())

@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from src.utils.metrics import get_metrics
+
 
 TIME_EPS = 1e-7
 
@@ -253,6 +255,7 @@ def compute_dctm_metrics(
     event_times: np.ndarray,
     events: np.ndarray,
     horizons: list[DCTMHorizon],
+    risk_alias_label: str | None = None,
     survival: np.ndarray | None = None,
     survival_times: np.ndarray | None = None,
     train_event_times: np.ndarray | None = None,
@@ -264,6 +267,15 @@ def compute_dctm_metrics(
         "c-index"
     }
     if should_compute_c_index:
+        if risk_alias_label is not None and risk_alias_label in risks_by_label:
+            results.update(
+                get_metrics(
+                    ["c-index"],
+                    preds=risks_by_label[risk_alias_label],
+                    labels=event_times,
+                    event_indicator=[bool(e) for e in events],
+                )
+            )
         results.update(
             compute_horizon_c_indices(
                 risks_by_label=risks_by_label,

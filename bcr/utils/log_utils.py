@@ -100,3 +100,7 @@ def update_log_dict(
     for r, v in results.items():
         wandb.define_metric(f"{prefix}/{r}", step_metric=step)
         log_dict.update({f"{prefix}/{r}": v})
+
+
+def log_best_epoch(prefix: str, best_epoch: int) -> None:
+    wandb.log({f"{prefix}/best-epoch": best_epoch + 1})
